@@ -90,7 +90,7 @@ void _starpu_src_common_deinit(void)
 }
 
 /* Finalize the execution of a task by a worker*/
-static int _starpu_src_common_finalize_job(struct _starpu_job *j, struct _starpu_worker *worker)
+static int _starpu_src_common_finalize_job(struct _starpu_job *j, struct _starpu_worker *worker, double measured_us)
 {
 	int profiling = starpu_profiling_status_get();
 	_starpu_driver_end_job(worker, j, &worker->perf_arch, 0, profiling);
@@ -113,6 +113,24 @@ static int _starpu_src_common_finalize_job(struct _starpu_job *j, struct _starpu
 	/* Finalize the execution */
 	if(count == 0)
 	{
+		/* feed the per-lane perfmodel the real kernel time,
+		 * set that interval to measured_us. */
+		if (measured_us > 0.0 && (worker->cl_start.tv_sec || worker->cl_start.tv_nsec))
+		{
+			struct timespec _delta;
+			_delta.tv_sec  = (time_t)(measured_us / 1000000.0);
+			_delta.tv_nsec = (long)((measured_us - (double)_delta.tv_sec * 1000000.0) * 1000.0);
+			starpu_timespec_add(&worker->cl_start, &_delta, &worker->cl_end);
+		}
+
+		if (measured_us > 0.0 && starpu_getenv("STARPU_SC_TIMING_VERBOSE"))
+			fprintf(stderr, "[starpu][sc-timing] worker=%d sink=%d lane=%s measured_us=%.1f fed_us=%.1f round_trip_us=%.1f\n",
+				worker->workerid, worker->sc_sink_rank,
+				worker->sc_lane_kind == _STARPU_SC_WORKER_LANE_CUDA ? "cuda" : "cpu",
+				measured_us,
+				starpu_timing_timespec_to_us(&worker->cl_end) - starpu_timing_timespec_to_us(&worker->cl_start),
+				starpu_timing_now() - starpu_timing_timespec_to_us(&worker->cl_start));
+
 		_starpu_driver_update_job_feedback(j, worker, &worker->perf_arch, profiling);
 
 		_starpu_push_task_output(j);
@@ -131,6 +149,11 @@ static int _starpu_src_common_process_completed_job(struct _starpu_mp_node *node
 
 	coreid = *(int *) arg_ptr;
 	arg_ptr += sizeof(coreid);
+
+	/* sink-measured kernel time (always present for non-detached completions;
+	 * this handler only runs for NOTIF_EXECUTION_COMPLETED) */
+	double measured_us = *(double *) arg_ptr;
+	arg_ptr += sizeof(measured_us);
 
 	struct _starpu_worker *worker = &workerset->workers[coreid];
 	struct _starpu_job *j = _starpu_get_job_associated_to_task(worker->current_task);
@@ -157,7 +180,7 @@ static int _starpu_src_common_process_completed_job(struct _starpu_mp_node *node
 		STARPU_PTHREAD_MUTEX_UNLOCK(&node->connection_mutex);
 
 	_starpu_set_local_worker_key(worker);
-	_starpu_src_common_finalize_job(j, worker);
+	_starpu_src_common_finalize_job(j, worker, measured_us);
 	_starpu_set_local_worker_key(old_worker);
 
 	worker->current_task = NULL;
@@ -388,12 +411,32 @@ int _starpu_src_common_sink_nbcores(struct _starpu_mp_node *node, int *buf)
 	return 0;
 }
 
+int _starpu_src_common_sink_get_capabilities(struct _starpu_mp_node *node, struct _starpu_mp_sink_capabilities *caps)
+{
+	enum _starpu_mp_command answer;
+	void *arg;
+	int arg_size = sizeof(*caps);
+
+	STARPU_PTHREAD_MUTEX_LOCK(&node->connection_mutex);
+
+	_starpu_mp_common_send_command(node, STARPU_MP_COMMAND_SINK_CAPABILITIES, NULL, 0);
+
+	answer = _starpu_mp_common_recv_command(node, &arg, &arg_size);
+
+	STARPU_ASSERT(answer == STARPU_MP_COMMAND_ANSWER_SINK_CAPABILITIES && arg_size == (int) sizeof(*caps));
+	memcpy(caps, arg, sizeof(*caps));
+
+	STARPU_PTHREAD_MUTEX_UNLOCK(&node->connection_mutex);
+
+	return 0;
+}
+
 /* Send a request to the sink linked to NODE for the pointer to the
  * function defined by FUNC_NAME.
  * In case of success, it returns 0 and FUNC_PTR contains the pointer ;
  * else it returns -ESPIPE if the function was not found.
  */
-int _starpu_src_common_lookup(struct _starpu_mp_node *node, void (**func_ptr)(void), const char *func_name)
+static int _starpu_src_common_lookup_impl(struct _starpu_mp_node *node, void (**func_ptr)(void), const char *func_name, enum _starpu_mp_impl_kind impl_kind)
 {
 	enum _starpu_mp_command answer;
 	void *arg;
@@ -405,8 +448,7 @@ int _starpu_src_common_lookup(struct _starpu_mp_node *node, void (**func_ptr)(vo
 	STARPU_PTHREAD_MUTEX_LOCK(&node->connection_mutex);
 
 	//_STARPU_DEBUG("Looking up %s\n", func_name);
-	_starpu_mp_common_send_command(node, STARPU_MP_COMMAND_LOOKUP, (void *) func_name,
-			arg_size);
+	_starpu_mp_common_send_command(node, impl_kind == STARPU_MP_IMPL_CUDA ? STARPU_MP_COMMAND_LOOKUP_CUDA : STARPU_MP_COMMAND_LOOKUP, (void *) func_name, arg_size);
 
 	answer = _starpu_src_common_wait_command_sync(node, (void **) &arg, &arg_size);
 
@@ -431,6 +473,11 @@ int _starpu_src_common_lookup(struct _starpu_mp_node *node, void (**func_ptr)(vo
 	return 0;
 }
 
+int _starpu_src_common_lookup(struct _starpu_mp_node *node, void (**func_ptr)(void), const char *func_name)
+{
+	return _starpu_src_common_lookup_impl(node, func_ptr, func_name, STARPU_MP_IMPL_CPU);
+}
+
 /* Send a message to the sink to execute a kernel.
  * The message sent has the form below :
  * [Function pointer on sink, number of interfaces, interfaces
@@ -443,6 +490,8 @@ int _starpu_src_common_lookup(struct _starpu_mp_node *node, void (**func_ptr)(vo
  */
 int _starpu_src_common_execute_kernel(struct _starpu_mp_node *node,
 				      void (*kernel)(void), unsigned coreid,
+				      enum _starpu_mp_impl_kind impl_kind,
+				      int device_id,
 				      enum starpu_codelet_type type,
 				      int is_parallel_task, int cb_workerid,
 				      starpu_data_handle_t *handles,
@@ -457,7 +506,7 @@ int _starpu_src_common_execute_kernel(struct _starpu_mp_node *node,
 	starpu_ssize_t interface_size[nb_interfaces ? nb_interfaces : 1];
 	void *interface_ptr[nb_interfaces ? nb_interfaces : 1];
 
-	buffer_size = sizeof(kernel) + sizeof(type) + sizeof(is_parallel_task) + sizeof(coreid) + sizeof(nb_interfaces) + sizeof(detached);
+	buffer_size = sizeof(kernel) + sizeof(impl_kind) + sizeof(device_id) + sizeof(type) + sizeof(is_parallel_task) + sizeof(coreid) + sizeof(nb_interfaces) + sizeof(detached);
 
 	/*if the task is parallel*/
 	if(is_parallel_task)
@@ -497,6 +546,12 @@ int _starpu_src_common_execute_kernel(struct _starpu_mp_node *node,
 
 	*(void(**)(void)) buffer = kernel;
 	buffer_ptr += sizeof(kernel);
+
+	*(enum _starpu_mp_impl_kind *) buffer_ptr = impl_kind;
+	buffer_ptr += sizeof(impl_kind);
+
+	*(int *) buffer_ptr = device_id;
+	buffer_ptr += sizeof(device_id);
 
 	*(enum starpu_codelet_type *) buffer_ptr = type;
 	buffer_ptr += sizeof(type);
@@ -602,12 +657,14 @@ static int _starpu_src_common_execute(struct _starpu_job *j, struct _starpu_work
 	STARPU_ASSERT(task);
 
 	void (*kernel)(void)  = node->get_kernel_from_job(node,j);
+	enum _starpu_mp_impl_kind impl_kind = worker->sc_lane_kind == _STARPU_SC_WORKER_LANE_CUDA ? STARPU_MP_IMPL_CUDA : STARPU_MP_IMPL_CPU;
+	int device_id = impl_kind == STARPU_MP_IMPL_CUDA ? worker->sc_cuda_devid : -1;
 
 	_starpu_driver_start_job(worker, j, &worker->perf_arch, 0, profiling);
 
 	//_STARPU_DEBUG("\nworkerid:%d, subworkerid:%d, rank:%d, type:%d, cb_workerid:%d, task_size:%d\n\n",worker->devid, worker->subworkerid, worker->current_rank,task->cl->type,j->combined_workerid,j->task_size);
 
-	_starpu_src_common_execute_kernel(node, kernel, worker->subworkerid, task->cl->type,
+	_starpu_src_common_execute_kernel(node, kernel, worker->subworkerid, impl_kind, device_id, task->cl->type,
 					  (j->task_size > 1),
 					  j->combined_workerid, STARPU_TASK_GET_HANDLES(task),
 					  _STARPU_TASK_GET_INTERFACES(task), STARPU_TASK_GET_NBUFFERS(task),
@@ -647,7 +704,7 @@ static struct _starpu_sink_kernel *starpu_src_common_register_kernel(const char 
 	return kernel;
 }
 
-static starpu_cpu_func_t starpu_src_common_get_kernel(const char *func_name)
+static starpu_cpu_func_t starpu_src_common_get_kernel(const char *func_name, enum _starpu_mp_impl_kind impl_kind)
 {
 	/* This function has to be called in the codelet only, by the thread
 	 * which will handle the task */
@@ -660,7 +717,7 @@ static starpu_cpu_func_t starpu_src_common_get_kernel(const char *func_name)
 	if (kernel->func[devid] == NULL)
 	{
 		struct _starpu_mp_node *node = _starpu_src_nodes[archtype][devid];
-		int ret = _starpu_src_common_lookup(node, (void (**)(void))&kernel->func[devid], kernel->name);
+		int ret = _starpu_src_common_lookup_impl(node, (void (**)(void))&kernel->func[devid], kernel->name, impl_kind);
 		if (ret)
 		{
 			_STARPU_DISP("Could not resolve function %s on worker %d\n", kernel->name, devid);
@@ -677,7 +734,7 @@ starpu_cpu_func_t _starpu_src_common_get_cpu_func_from_codelet(struct starpu_cod
 	const char *func_name = _starpu_task_get_cpu_name_nth_implementation(cl, nimpl);
 	STARPU_ASSERT_MSG(func_name, "when server client is used, cpu_funcs_name has to be defined and the function be non-static");
 
-	starpu_cpu_func_t kernel = starpu_src_common_get_kernel(func_name);
+	starpu_cpu_func_t kernel = starpu_src_common_get_kernel(func_name, STARPU_MP_IMPL_CPU);
 
 	STARPU_ASSERT_MSG(kernel, "when server client is used, cpu_funcs_name has to be defined and the function be non-static");
 
@@ -690,9 +747,34 @@ void(* _starpu_src_common_get_cpu_func_from_job(const struct _starpu_mp_node *no
 	const char *func_name = _starpu_task_get_cpu_name_nth_implementation(j->task->cl, j->nimpl);
 	STARPU_ASSERT_MSG(func_name, "when server client is used, cpu_funcs_name has to be defined and the function be non-static");
 
-	starpu_cpu_func_t kernel = starpu_src_common_get_kernel(func_name);
+	starpu_cpu_func_t kernel = starpu_src_common_get_kernel(func_name, STARPU_MP_IMPL_CPU);
 
 	STARPU_ASSERT_MSG(kernel, "when server client is used, cpu_funcs_name has to be defined and the function be non-static");
+
+	return (void (*)(void))kernel;
+}
+
+void(* _starpu_src_common_get_sc_func_from_job(const struct _starpu_mp_node *node STARPU_ATTRIBUTE_UNUSED, struct _starpu_job *j))(void)
+{
+	unsigned workerid = starpu_worker_get_id_check();
+	struct _starpu_worker *worker = &_starpu_get_machine_config()->workers[workerid];
+	enum _starpu_mp_impl_kind impl_kind = worker->sc_lane_kind == _STARPU_SC_WORKER_LANE_CUDA ? STARPU_MP_IMPL_CUDA : STARPU_MP_IMPL_CPU;
+	const char *func_name;
+
+	if (impl_kind == STARPU_MP_IMPL_CUDA)
+	{
+		func_name = _starpu_task_get_cuda_name_nth_implementation(j->task->cl, j->nimpl);
+		STARPU_ASSERT_MSG(func_name, "when server client CUDA lane is used, cuda_funcs_name has to be defined and the function be non-static");
+	}
+	else
+	{
+		func_name = _starpu_task_get_cpu_name_nth_implementation(j->task->cl, j->nimpl);
+		STARPU_ASSERT_MSG(func_name, "when server client CPU lane is used, cpu_funcs_name has to be defined and the function be non-static");
+	}
+
+	starpu_cpu_func_t kernel = starpu_src_common_get_kernel(func_name, impl_kind);
+
+	STARPU_ASSERT_MSG(kernel, "when server client is used, kernel symbol %s has to be defined and non-static", func_name);
 
 	return (void (*)(void))kernel;
 }

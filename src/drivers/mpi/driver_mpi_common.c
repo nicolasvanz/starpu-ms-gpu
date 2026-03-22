@@ -19,6 +19,9 @@
 #include <core/perfmodel/perfmodel.h>
 #include <drivers/mp_common/source_common.h>
 #include <drivers/mpi/driver_mpi_common.h>
+#ifdef STARPU_USE_CUDA
+#include <cuda_runtime_api.h>
+#endif
 
 #define NITER 32
 #define SIZE_BANDWIDTH (1024*1024)
@@ -160,10 +163,38 @@ void _starpu_mpi_common_mp_initialize_src_sink(struct _starpu_mp_node *node)
 	if (nmpicores == -1)
 	{
 		int nhyperthreads = topology->nhwpus / topology->nhwworker[STARPU_CPU_WORKER][0];
-		node->nb_cores = topology->nusedpus / nhyperthreads;
+		node->nb_cpu_cores = topology->nusedpus / nhyperthreads;
 	}
 	else
-		node->nb_cores = nmpicores;
+		node->nb_cpu_cores = nmpicores;
+
+	int nmpisc_ncuda = starpu_getenv_number("STARPU_MPI_SC_NCUDA");
+	if (nmpisc_ncuda == 0)
+	{
+		node->nb_cuda_devices = 0;
+	}
+	else
+	{
+#ifdef STARPU_USE_CUDA
+		int detected_cuda = 0;
+		if (cudaGetDeviceCount(&detected_cuda) != cudaSuccess)
+			detected_cuda = 0;
+		if (nmpisc_ncuda == -1)
+			node->nb_cuda_devices = detected_cuda;
+		else if (nmpisc_ncuda > detected_cuda)
+			node->nb_cuda_devices = detected_cuda;
+		else if (nmpisc_ncuda < -1)
+			node->nb_cuda_devices = 0;
+		else
+			node->nb_cuda_devices = nmpisc_ncuda;
+#else
+		node->nb_cuda_devices = 0;
+#endif
+	}
+
+	node->nb_cores = node->nb_cpu_cores + node->nb_cuda_devices;
+	if (node->nb_cores < 0)
+		node->nb_cores = 0;
 }
 
 int _starpu_mpi_common_recv_is_ready(const struct _starpu_mp_node *mp_node)
@@ -578,4 +609,3 @@ print:
 	}
 	free(buf);
 }
-

@@ -49,7 +49,9 @@ enum _starpu_mp_command
 	STARPU_MP_COMMAND_EXECUTE,
 	STARPU_MP_COMMAND_EXECUTE_DETACHED,
 	STARPU_MP_COMMAND_SINK_NBCORES,
+	STARPU_MP_COMMAND_SINK_CAPABILITIES,
 	STARPU_MP_COMMAND_LOOKUP,
+	STARPU_MP_COMMAND_LOOKUP_CUDA,
 	STARPU_MP_COMMAND_ALLOCATE,
 	STARPU_MP_COMMAND_FREE,
 	STARPU_MP_COMMAND_MAP,
@@ -79,6 +81,7 @@ enum _starpu_mp_command
 	STARPU_MP_COMMAND_ERROR_MAP,
 	STARPU_MP_COMMAND_ANSWER_TRANSFER_COMPLETE,
 	STARPU_MP_COMMAND_ANSWER_SINK_NBCORES,
+	STARPU_MP_COMMAND_ANSWER_SINK_CAPABILITIES,
 	STARPU_MP_COMMAND_ANSWER_EXECUTION_SUBMITTED,
 	STARPU_MP_COMMAND_ANSWER_EXECUTION_DETACHED_SUBMITTED,
 
@@ -147,6 +150,20 @@ struct _starpu_mp_transfer_unmap_command
 	size_t size;
 };
 
+struct _starpu_mp_sink_capabilities
+{
+	int nb_cpu_cores;
+	int nb_cuda_devices;
+};
+
+enum _starpu_mp_impl_kind
+{
+	STARPU_MP_IMPL_CPU    = 0,
+	STARPU_MP_IMPL_CUDA   = 1,
+	STARPU_MP_IMPL_OPENCL = 2,   /* reserved for future backends */
+	STARPU_MP_IMPL_HIP    = 3
+};
+
 LIST_TYPE(mp_barrier,
 		int id;
 		starpu_pthread_barrier_t before_work_barrier;
@@ -162,6 +179,8 @@ LIST_TYPE(mp_message,
 struct mp_task
 {
 	void (*kernel)(void **, void *);
+	enum _starpu_mp_impl_kind impl_kind;
+	int device_id;   /* accelerator device index within the sink (-1 for CPU) */
 	enum starpu_data_interface_id *ids;
 	void **interfaces;
 	unsigned nb_interfaces;
@@ -169,6 +188,7 @@ struct mp_task
 	unsigned cl_arg_size;
 	void *cl_ret;
 	unsigned cl_ret_size;
+	double measured_us;   /* sink-measured kernel wall time (us); 0 if not measured */
 	unsigned coreid;
 	enum starpu_codelet_type type;
 	int is_parallel_task;
@@ -194,6 +214,8 @@ struct _starpu_mp_node
 	/*the number of core on the device
 	 * Must be initialized during init function*/
 	int nb_cores;
+	int nb_cpu_cores;
+	int nb_cuda_devices;
 
 	/*Is starpu running*/
 	int is_running;

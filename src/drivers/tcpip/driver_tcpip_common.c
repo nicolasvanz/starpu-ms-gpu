@@ -941,10 +941,12 @@ void _starpu_tcpip_common_mp_initialize_src_sink(struct _starpu_mp_node *node)
 	if (ntcpipcores == -1)
 	{
 		int nhyperthreads = topology->nhwpus / topology->nhwworker[STARPU_CPU_WORKER][0];
-		node->nb_cores = topology->nusedpus / nhyperthreads;
+		node->nb_cpu_cores = topology->nusedpus / nhyperthreads;
 	}
 	else
-		node->nb_cores = ntcpipcores;
+		node->nb_cpu_cores = ntcpipcores;
+	node->nb_cuda_devices = 0;
+	node->nb_cores = node->nb_cpu_cores;
 }
 
 int _starpu_tcpip_common_recv_is_ready(const struct _starpu_mp_node *mp_node)

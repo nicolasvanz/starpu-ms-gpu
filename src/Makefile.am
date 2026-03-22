@@ -142,6 +142,7 @@ noinst_HEADERS = 						\
 	drivers/mp_common/mp_common.h				\
 	drivers/mp_common/source_common.h			\
 	drivers/mp_common/sink_common.h				\
+	drivers/mp_common/sc_device_backend.h			\
 	drivers/cpu/driver_cpu.h				\
 	drivers/cuda/driver_cuda.h				\
 	drivers/hip/driver_hip.h				\
@@ -426,6 +427,7 @@ if STARPU_USE_MP
 libstarpu_@STARPU_EFFECTIVE_VERSION@_la_SOURCES += drivers/mp_common/mp_common.c
 libstarpu_@STARPU_EFFECTIVE_VERSION@_la_SOURCES += drivers/mp_common/source_common.c
 libstarpu_@STARPU_EFFECTIVE_VERSION@_la_SOURCES += drivers/mp_common/sink_common.c
+libstarpu_@STARPU_EFFECTIVE_VERSION@_la_SOURCES += drivers/mp_common/sc_device_backend.c
 endif
 
 ###################################

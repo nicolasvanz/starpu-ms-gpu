@@ -43,12 +43,14 @@ int _starpu_src_common_store_message(struct _starpu_mp_node *node, void * arg, i
 enum _starpu_mp_command _starpu_src_common_wait_completed_execution(struct _starpu_mp_node *node, int devid, void **arg, int * arg_size);
 
 int _starpu_src_common_sink_nbcores(struct _starpu_mp_node *node, int *buf);
+int _starpu_src_common_sink_get_capabilities(struct _starpu_mp_node *node, struct _starpu_mp_sink_capabilities *caps);
 
 int _starpu_src_common_lookup(struct _starpu_mp_node *node, void (**func_ptr)(void), const char *func_name);
 
 starpu_cpu_func_t _starpu_src_common_get_cpu_func_from_codelet(struct starpu_codelet *cl, unsigned nimpl);
 
 void(* _starpu_src_common_get_cpu_func_from_job(const struct _starpu_mp_node *node STARPU_ATTRIBUTE_UNUSED, struct _starpu_job *j))(void);
+void(* _starpu_src_common_get_sc_func_from_job(const struct _starpu_mp_node *node STARPU_ATTRIBUTE_UNUSED, struct _starpu_job *j))(void);
 
 struct _starpu_mp_node *_starpu_src_common_get_mp_node_from_memory_node(int memory_node);
 uintptr_t _starpu_src_common_allocate(enum starpu_worker_archtype archtype, int devid, size_t size, int flags);
@@ -59,6 +61,8 @@ void _starpu_src_common_unmap(unsigned dst_node, uintptr_t addr, size_t size);
 
 int _starpu_src_common_execute_kernel(struct _starpu_mp_node *node,
 				      void (*kernel)(void), unsigned coreid,
+				      enum _starpu_mp_impl_kind impl_kind,
+				      int cuda_devid,
 				      enum starpu_codelet_type type,
 				      int is_parallel_task, int cb_workerid,
 				      starpu_data_handle_t *handles,

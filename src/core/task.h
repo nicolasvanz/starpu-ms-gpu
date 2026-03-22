@@ -142,6 +142,11 @@ static inline const char *_starpu_task_get_cpu_name_nth_implementation(struct st
 	return cl->cpu_funcs_name[nimpl];
 }
 
+static inline const char *_starpu_task_get_cuda_name_nth_implementation(struct starpu_codelet *cl, unsigned nimpl)
+{
+	return cl->cuda_funcs_name[nimpl];
+}
+
 #define _STARPU_TASK_SET_INTERFACE(task, interface, i) do { if (task->dyn_handles) task->dyn_interfaces[i] = interface; else task->interfaces[i] = interface;} while(0)
 #define _STARPU_TASK_GET_INTERFACES(task) ((task->dyn_handles) ? task->dyn_interfaces : task->interfaces)
 

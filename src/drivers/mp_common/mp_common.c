@@ -43,8 +43,12 @@ const char *_starpu_mp_common_command_to_string(const enum _starpu_mp_command co
 			return "EXECUTE_DETACHED";
 		case STARPU_MP_COMMAND_SINK_NBCORES:
 			return "SINK_NBCORES";
+		case STARPU_MP_COMMAND_SINK_CAPABILITIES:
+			return "SINK_CAPABILITIES";
 		case STARPU_MP_COMMAND_LOOKUP:
 			return "LOOKUP";
+		case STARPU_MP_COMMAND_LOOKUP_CUDA:
+			return "LOOKUP_CUDA";
 		case STARPU_MP_COMMAND_ALLOCATE:
 			return "ALLOCATE";
 		case STARPU_MP_COMMAND_FREE:
@@ -97,6 +101,8 @@ const char *_starpu_mp_common_command_to_string(const enum _starpu_mp_command co
 			return "ANSWER_TRANSFER_COMPLETE";
 		case STARPU_MP_COMMAND_ANSWER_SINK_NBCORES:
 			return "ANSWER_SINK_NBCORES";
+		case STARPU_MP_COMMAND_ANSWER_SINK_CAPABILITIES:
+			return "ANSWER_SINK_CAPABILITIES";
 		case STARPU_MP_COMMAND_ANSWER_EXECUTION_SUBMITTED:
 			return "ANSWER_EXECUTION_SUBMITTED";
 		case STARPU_MP_COMMAND_ANSWER_EXECUTION_DETACHED_SUBMITTED:
@@ -153,6 +159,9 @@ _starpu_mp_common_node_create(enum _starpu_mp_node_kind node_kind,
 	node->kind = node_kind;
 
 	node->peer_id = peer_id;
+	node->nb_cores = 0;
+	node->nb_cpu_cores = 0;
+	node->nb_cuda_devices = 0;
 
 	switch(node->kind)
 	{
@@ -185,7 +194,7 @@ _starpu_mp_common_node_create(enum _starpu_mp_node_kind node_kind,
 			node->dt_send_to_device = _starpu_mpi_common_send_to_device;
 			node->dt_recv_from_device = _starpu_mpi_common_recv_from_device;
 
-			node->get_kernel_from_job = _starpu_src_common_get_cpu_func_from_job;
+			node->get_kernel_from_job = _starpu_src_common_get_sc_func_from_job;
 			node->lookup = NULL;
 			node->bind_thread = NULL;
 			node->execute = NULL;
@@ -267,7 +276,7 @@ _starpu_mp_common_node_create(enum _starpu_mp_node_kind node_kind,
 			node->dt_send_to_device = _starpu_tcpip_common_send_to_device;
 			node->dt_recv_from_device = _starpu_tcpip_common_recv_from_device;
 
-			node->get_kernel_from_job = _starpu_src_common_get_cpu_func_from_job;
+			node->get_kernel_from_job = _starpu_src_common_get_sc_func_from_job;
 			node->lookup = NULL;
 			node->bind_thread = NULL;
 			node->execute = NULL;
@@ -521,11 +530,12 @@ void _starpu_sink_launch_workers(struct _starpu_mp_node *node)
 #if defined(HAVE_PTHREAD_SETAFFINITY_NP) && defined(__linux__)
 		//init the set
 		CPU_ZERO(&cpuset);
-		CPU_SET(i,&cpuset);
+		if (i < node->nb_cpu_cores)
+			CPU_SET(i,&cpuset);
 
 		int nobind = starpu_getenv_number("STARPU_WORKERS_NOBIND");
 
-		if (nobind <= 0)
+		if (nobind <= 0 && i < node->nb_cpu_cores)
 		{
 			ret = pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpuset);
 			STARPU_ASSERT(ret == 0);

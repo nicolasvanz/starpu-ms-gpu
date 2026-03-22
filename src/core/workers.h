@@ -155,6 +155,13 @@ struct _starpu_node
 };
 
 struct _starpu_ctx_change_list;
+
+enum _starpu_sc_worker_lane_kind
+{
+	_STARPU_SC_WORKER_LANE_CPU = 0,
+	_STARPU_SC_WORKER_LANE_CUDA = 1
+};
+
 /** This is initialized by _starpu_worker_init() */
 LIST_TYPE(_starpu_worker,
 	struct _starpu_machine_config *config;
@@ -166,6 +173,9 @@ LIST_TYPE(_starpu_worker,
 	unsigned devid; /**< which cpu/gpu/etc is controlled by the worker ? */
 	unsigned devnum; /**< number of the device controlled by the worker, i.e. ranked from 0 and contiguous */
 	unsigned subworkerid; /**< which sub-worker this one is for the cpu/gpu */
+	int sc_sink_rank; /**< sink rank for MPI_SC/TCPIP workers, -1 otherwise */
+	enum _starpu_sc_worker_lane_kind sc_lane_kind; /**< lane kind for MPI_SC/TCPIP workers */
+	int sc_cuda_devid; /**< CUDA device id on sink for CUDA lane, -1 otherwise */
 	int bindid; /**< which cpu is the driver bound to ? (logical index) */
 	int workerid; /**< uniquely identify the worker among all processing units types */
 	int combined_workerid; /**< combined worker currently using this worker */

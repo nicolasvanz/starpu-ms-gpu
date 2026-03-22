@@ -51,25 +51,56 @@ static void __starpu_init_mpi_config(struct _starpu_machine_topology *topology,
 				     struct _starpu_machine_config *config,
 				     unsigned mpi_idx)
 {
-	int nhwcores;
-	_starpu_src_common_sink_nbcores(_starpu_src_nodes[STARPU_MPI_SC_WORKER][mpi_idx], &nhwcores);
+	struct _starpu_mp_sink_capabilities caps;
+	_starpu_src_common_sink_get_capabilities(_starpu_src_nodes[STARPU_MPI_SC_WORKER][mpi_idx], &caps);
+	int nhwcores = caps.nb_cpu_cores;
+	int nhwcuda = caps.nb_cuda_devices;
 	STARPU_ASSERT(mpi_idx < STARPU_NMAXDEVS);
-	topology->nhwworker[STARPU_MPI_SC_WORKER][mpi_idx] = nhwcores;
 
 	int nmpicores;
 	nmpicores = starpu_getenv_number("STARPU_MPI_SC_NTHREADS");
 
 	_starpu_topology_check_ndevices(&nmpicores, nhwcores, 0, INT_MAX, 0, "STARPU_MPI_SC_NTHREADS", "MPI_SC_NTHREADS", "MPI cores", "");
 
+	int nmpicuda = config->conf.nmpi_sc_ncuda;
+	if (nmpicuda == -1)
+		nmpicuda = nhwcuda;
+	_starpu_topology_check_ndevices(&nmpicuda, nhwcuda, 0, INT_MAX, 0, "STARPU_MPI_SC_NCUDA", "MPI_SC_NCUDA", "MPI CUDA", "");
+
+	unsigned ntotalworkers = (unsigned)(nmpicores + nmpicuda);
+	topology->nhwworker[STARPU_MPI_SC_WORKER][mpi_idx] = ntotalworkers;
+
 	mpi_worker_set[mpi_idx].workers = &config->workers[topology->nworkers];
-	mpi_worker_set[mpi_idx].nworkers = nmpicores;
+	mpi_worker_set[mpi_idx].nworkers = ntotalworkers;
 	_starpu_src_nodes[STARPU_MPI_SC_WORKER][mpi_idx]->baseworkerid = topology->nworkers;
+	unsigned baseworkerid = topology->nworkers;
 
 	_starpu_topology_configure_workers(topology, config,
 			STARPU_MPI_SC_WORKER,
 			mpi_idx, mpi_idx, 0, 0,
-			nmpicores, 1, &mpi_worker_set[mpi_idx],
+			ntotalworkers, 1, &mpi_worker_set[mpi_idx],
 			_starpu_mpi_common_multiple_thread  ? NULL : mpi_worker_set);
+
+	unsigned i;
+	for (i = 0; i < ntotalworkers; i++)
+	{
+		struct _starpu_worker *worker = &config->workers[baseworkerid + i];
+		worker->sc_sink_rank = (int) mpi_idx;
+		if (i < (unsigned) nmpicores)
+		{
+			worker->sc_lane_kind = _STARPU_SC_WORKER_LANE_CPU;
+			worker->sc_cuda_devid = -1;
+		}
+		else
+		{
+			worker->sc_lane_kind = _STARPU_SC_WORKER_LANE_CUDA;
+			worker->sc_cuda_devid = (int) (i - (unsigned) nmpicores);
+		}
+
+		worker->perf_arch.devices[0].devid =
+			(int) mpi_idx * (STARPU_MAXCUDADEVS + 1)
+			+ (worker->sc_lane_kind == _STARPU_SC_WORKER_LANE_CPU ? 0 : 1 + worker->sc_cuda_devid);
+	}
 }
 
 /* Determine which devices we will use */
@@ -295,8 +326,16 @@ void *_starpu_mpi_src_worker(void *arg)
 		for (i = 0; i < config->topology.nworker[STARPU_MPI_SC_WORKER][devid]; i++)
 		{
 			struct _starpu_worker *worker = &config->workers[baseworkerid+i];
-			snprintf(worker->name, sizeof(worker->name), "MPI_SC %u core %u", devid, i);
-			snprintf(worker->short_name, sizeof(worker->short_name), "MPI_SC %u.%u", devid, i);
+			if (worker->sc_lane_kind == _STARPU_SC_WORKER_LANE_CUDA)
+			{
+				snprintf(worker->name, sizeof(worker->name), "MPI_SC %u cuda %d", devid, worker->sc_cuda_devid);
+				snprintf(worker->short_name, sizeof(worker->short_name), "MPI_SC %u.cu%d", devid, worker->sc_cuda_devid);
+			}
+			else
+			{
+				snprintf(worker->name, sizeof(worker->name), "MPI_SC %u core %u", devid, i);
+				snprintf(worker->short_name, sizeof(worker->short_name), "MPI_SC %u.%u", devid, i);
+			}
 		}
 
 		{

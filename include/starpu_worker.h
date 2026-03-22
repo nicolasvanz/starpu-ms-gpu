@@ -212,6 +212,24 @@ unsigned starpu_opencl_worker_get_count(void);
 unsigned starpu_mpi_sc_worker_get_count(void);
 
 /**
+   Return the sink rank attached to an MPI_SC worker.
+   Return \c -1 if \p workerid is invalid or not an MPI_SC worker.
+*/
+int starpu_mpi_sc_worker_get_sink_rank(unsigned workerid);
+
+/**
+   Return whether an MPI_SC worker is a CUDA lane.
+   Return 1 for CUDA lane, 0 for CPU lane or invalid worker.
+*/
+int starpu_mpi_sc_worker_is_cuda(unsigned workerid);
+
+/**
+   Return the sink-local CUDA device id for an MPI_SC CUDA worker.
+   Return \c -1 for non-CUDA or invalid workers.
+*/
+int starpu_mpi_sc_worker_get_cuda_devid(unsigned workerid);
+
+/**
    Return the number of TCPIP clients controlled by StarPU.
    See \ref TopologyWorkers for more details.
 */

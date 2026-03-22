@@ -520,6 +520,15 @@ struct starpu_codelet
 	const char *cpu_funcs_name[STARPU_MAXIMPLEMENTATIONS];
 
 	/**
+	   Optional array of strings which provide the name of the CUDA
+	   functions referenced in the array
+	   starpu_codelet::cuda_funcs. This can be used when running on
+	   MPI server client devices for StarPU to look up the sink-side
+	   CUDA function implementation through its name.
+	*/
+	const char *cuda_funcs_name[STARPU_MAXIMPLEMENTATIONS];
+
+	/**
 	   Optional function to decide if the task is to be
 	   transformed into a recursive task
 	   See \ref RecursiveTasks for more details.

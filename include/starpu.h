@@ -210,6 +210,15 @@ struct starpu_conf
 	int nmpi_sc;
 
 	/**
+	   Number of CUDA workers per MPI server client sink.
+	   This can also be specified with the environment variable
+	   \ref STARPU_MPI_SC_NCUDA.
+	   Value \c -1 means all sink CUDA devices, \c 0 disables sink CUDA workers.
+	   (default = \c -1)
+	*/
+	int nmpi_sc_ncuda;
+
+	/**
 	   Number of TCP/IP server client devices that StarPU can use.
 	   This can also be specified with the environment variable
 	   \ref STARPU_NTCPIP_SC.

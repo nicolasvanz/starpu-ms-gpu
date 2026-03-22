@@ -518,6 +518,15 @@ Specify the number of MPI server client devices that StarPU can use.
 Specify the number of threads to use on the MPI client devices.
 </dd>
 
+<dt>STARPU_MPI_SC_NCUDA</dt>
+<dd>
+\anchor STARPU_MPI_SC_NCUDA
+\addindex __env__STARPU_MPI_SC_NCUDA
+Specify the number of CUDA lanes to expose per MPI server client node.
+Value \c -1 uses all CUDA devices available on each sink, and value \c 0
+disables CUDA lanes.
+</dd>
+
 <dt>STARPU_MPI_SC_MULTIPLE_THREAD</dt>
 <dd>
 \anchor STARPU_MPI_SC_MULTIPLE_THREAD

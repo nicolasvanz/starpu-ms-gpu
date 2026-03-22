@@ -1383,6 +1383,9 @@ activate this support together with the MPI support.
 
 The existing kernels for CPU devices can be used as such. They only have to be
 exposed through the name of the function in the \ref starpu_codelet::cpu_funcs_name field.
+CUDA kernels can similarly be exposed through
+\ref starpu_codelet::cuda_funcs_name so that remote MPI server client CUDA lanes can
+execute them.
 Functions have to be globally-visible (i.e. not static) for StarPU to
 be able to look them up, and <c>-rdynamic</c> must be passed to gcc (or
 <c>-export-dynamic</c> to ld) so that symbols of the main program are visible.
@@ -1397,6 +1400,13 @@ Choosing the number of cores on each worker device is done by setting
 the environment variable \ref STARPU_MPI_SC_NTHREADS "STARPU_MPI_SC_NTHREADS=\<number\>"
 with <c>\<number\></c> being the requested number of cores. By default,
 all the worker's cores are used.
+
+Choosing the number of CUDA lanes on each worker node is done by setting
+the environment variable \ref STARPU_MPI_SC_NCUDA "STARPU_MPI_SC_NCUDA=\<number\>".
+By default, all available CUDA devices are exposed as CUDA lanes on each sink.
+
+Execution can then be targeted explicitly with \ref STARPU_EXECUTE_ON_WORKER
+to select either a remote CPU lane or a remote CUDA lane.
 
 Setting the number of client nodes is done by changing the <c>-np</c>
 parameter when executing the application with mpirun or mpiexec.

@@ -22,12 +22,17 @@
 #include <drivers/driver_common/driver_common.h>
 #include <drivers/mp_common/mp_common.h>
 #include <drivers/mp_common/sink_common.h>
+#include <drivers/mp_common/sc_device_backend.h>
 #include <drivers/mpi/driver_mpi_common.h>
 #include <drivers/tcpip/driver_tcpip_common.h>
 #include <datawizard/interfaces/data_interface.h>
 #include <common/barrier.h>
 #include <core/workers.h>
 #include <common/barrier_counter.h>
+#ifdef STARPU_USE_CUDA
+#include <starpu_cuda.h>
+#include <cuda_runtime_api.h>
+#endif
 
 #include "sink_common.h"
 
@@ -56,15 +61,29 @@ static enum _starpu_mp_node_kind _starpu_sink_common_get_kind(void)
 static void _starpu_sink_common_get_nb_cores(struct _starpu_mp_node *node)
 {
 	// Process packet received from `_starpu_src_common_sink_cores'.
-	_starpu_mp_common_send_command(node, STARPU_MP_COMMAND_ANSWER_SINK_NBCORES, &node->nb_cores, sizeof(int));
+	_starpu_mp_common_send_command(node, STARPU_MP_COMMAND_ANSWER_SINK_NBCORES, &node->nb_cpu_cores, sizeof(int));
+}
+
+static void _starpu_sink_common_get_capabilities(struct _starpu_mp_node *node)
+{
+	struct _starpu_mp_sink_capabilities caps =
+	{
+		.nb_cpu_cores = node->nb_cpu_cores,
+		.nb_cuda_devices = node->nb_cuda_devices
+	};
+	_starpu_mp_common_send_command(node, STARPU_MP_COMMAND_ANSWER_SINK_CAPABILITIES, &caps, sizeof(caps));
 }
 
 /* Send to host the address of the function given in parameter
  */
-static void _starpu_sink_common_lookup(const struct _starpu_mp_node *node, char *func_name)
+static void _starpu_sink_common_lookup(const struct _starpu_mp_node *node, char *func_name, enum _starpu_mp_impl_kind impl_kind)
 {
 	void (*func)(void);
-	func = node->lookup(node,func_name);
+	const struct _starpu_sc_device_backend *backend = _starpu_sc_backend_for(impl_kind);
+	if (backend)
+		func = (void (*)(void)) backend->lookup(func_name);
+	else
+		func = node->lookup ? node->lookup(node, func_name) : NULL;
 
 	//_STARPU_DEBUG("Looked up %s, got %p\n", func_name, func);
 
@@ -93,8 +112,13 @@ void _starpu_sink_common_allocate(const struct _starpu_mp_node *mp_node, void *a
 {
 	STARPU_ASSERT(arg_size == sizeof(size_t));
 
-	void *addr;
-	_STARPU_MALLOC(addr, *(size_t *)(arg));
+	void *addr = NULL;
+	const struct _starpu_sc_device_backend *backend =
+		(mp_node->nb_cuda_devices > 0) ? _starpu_sc_backend_for(STARPU_MP_IMPL_CUDA) : NULL;
+	if (backend && backend->alloc)
+		addr = backend->alloc(*(size_t *)(arg));
+	if (!addr)
+		_STARPU_MALLOC(addr, *(size_t *)(arg));
 
 	/* If the allocation fail, let's send an error to the host.
 	 */
@@ -104,11 +128,19 @@ void _starpu_sink_common_allocate(const struct _starpu_mp_node *mp_node, void *a
 		_starpu_mp_common_send_command(mp_node, STARPU_MP_COMMAND_ERROR_ALLOCATE, NULL, 0);
 }
 
-void _starpu_sink_common_free(const struct _starpu_mp_node *mp_node STARPU_ATTRIBUTE_UNUSED, void *arg, int arg_size)
+void _starpu_sink_common_free(const struct _starpu_mp_node *mp_node, void *arg, int arg_size)
 {
 	STARPU_ASSERT(arg_size == sizeof(void *));
 
-	free(*(void **)(arg));
+	void *ptr = *(void **)(arg);
+	const struct _starpu_sc_device_backend *backend =
+		(mp_node->nb_cuda_devices > 0) ? _starpu_sc_backend_for(STARPU_MP_IMPL_CUDA) : NULL;
+	if (backend && backend->owns_ptr && backend->owns_ptr(ptr))
+	{
+		backend->free_ptr(ptr);
+		return;
+	}
+	free(ptr);
 }
 
 /* Map a memory space and send the address of this space to the host
@@ -298,6 +330,7 @@ static void _starpu_sink_common_recv_workers(struct _starpu_mp_node * node, void
 
 	int nworkers = *(int *)arg_ptr;
 	arg_ptr += sizeof(nworkers);
+	STARPU_ASSERT_MSG(nworkers <= node->nb_cores, "worker count mismatch between source (%d) and sink capacity (%d)", nworkers, node->nb_cores);
 
 	int worker_size = *(int *)arg_ptr;
 	arg_ptr += sizeof(worker_size);
@@ -396,8 +429,14 @@ void _starpu_sink_common_worker(void)
 				case STARPU_MP_COMMAND_SINK_NBCORES:
 					_starpu_sink_common_get_nb_cores(node);
 					break;
+				case STARPU_MP_COMMAND_SINK_CAPABILITIES:
+					_starpu_sink_common_get_capabilities(node);
+					break;
 				case STARPU_MP_COMMAND_LOOKUP:
-					_starpu_sink_common_lookup(node, (char *) arg);
+					_starpu_sink_common_lookup(node, (char *) arg, STARPU_MP_IMPL_CPU);
+					break;
+				case STARPU_MP_COMMAND_LOOKUP_CUDA:
+					_starpu_sink_common_lookup(node, (char *) arg, STARPU_MP_IMPL_CUDA);
 					break;
 
 				case STARPU_MP_COMMAND_ALLOCATE:
@@ -611,20 +650,29 @@ static void _starpu_sink_common_execution_completed_message(struct _starpu_mp_no
 		message->type = STARPU_MP_COMMAND_NOTIF_EXECUTION_COMPLETED;
 
 	message->size = sizeof(int);
+	/* non-detached completions carry the sink-measured kernel time */
+	if (!task->detached)
+		message->size += sizeof(task->measured_us);
 
 	/* If the user didn't give any cl_ret, there is no need to send it */
-	 if (task->cl_ret)
-	 {
+	if (task->cl_ret)
+	{
 		STARPU_ASSERT(task->cl_ret_size);
 		message->size += task->cl_ret_size;
-	 }
+	}
 
 	_STARPU_MALLOC(message->buffer, message->size);
 
-	*(int*) message->buffer = task->coreid;
-
-	 if (task->cl_ret)
-		memcpy(message->buffer+sizeof(int), task->cl_ret, task->cl_ret_size);
+	char *_p = message->buffer;
+	*(int *) _p = task->coreid;
+	_p += sizeof(int);
+	if (!task->detached)
+	{
+		*(double *) _p = task->measured_us;
+		_p += sizeof(task->measured_us);
+	}
+	if (task->cl_ret)
+		memcpy(_p, task->cl_ret, task->cl_ret_size);
 
 	/* Append the message to the queue */
 	_starpu_sink_common_append_message(node, message);
@@ -712,7 +760,21 @@ static void _starpu_sink_common_execute_kernel(struct _starpu_mp_node *node, int
 
 			_starpu_set_current_task(&s_task);
 			/* execute the task */
-			task->kernel(task->interfaces,task->cl_arg);
+			const struct _starpu_sc_device_backend *backend = _starpu_sc_backend_for(task->impl_kind);
+			double _sc_t0 = starpu_timing_now();
+			if (backend)
+			{
+				backend->set_device(task->device_id);
+				task->kernel(task->interfaces, task->cl_arg);
+				backend->synchronize();
+			}
+			else
+			{
+				STARPU_ASSERT_MSG(task->impl_kind == STARPU_MP_IMPL_CPU,
+						  "no device backend available for impl_kind %d on this sink", (int) task->impl_kind);
+				task->kernel(task->interfaces, task->cl_arg);
+			}
+			task->measured_us = starpu_timing_now() - _sc_t0;
 			_starpu_set_current_task(NULL);
 
 			/*copy cl_ret and cl_ret_size from starpu_task into mp_task*/
@@ -786,7 +848,8 @@ void* _starpu_sink_thread(void * thread_arg)
 	starpu_pthread_setname(s);
 	free(s);
 
-	node->bind_thread(node, coreid, &coreid, 1);
+	if (worker->sc_lane_kind != _STARPU_SC_WORKER_LANE_CUDA)
+		node->bind_thread(node, coreid, &coreid, 1);
 
 	_starpu_set_local_worker_key(worker);
 	while(node->is_running)
@@ -844,6 +907,12 @@ void _starpu_sink_common_execute(struct _starpu_mp_node *node, void *arg, int ar
 	_STARPU_CALLOC(task, 1, sizeof(struct mp_task));
 	task->kernel = *(void(**)(void **, void *)) arg_ptr;
 	arg_ptr += sizeof(task->kernel);
+
+	task->impl_kind = *(enum _starpu_mp_impl_kind *) arg_ptr;
+	arg_ptr += sizeof(task->impl_kind);
+
+	task->device_id = *(int *) arg_ptr;
+	arg_ptr += sizeof(task->device_id);
 
 	task->type = *(enum starpu_codelet_type *) arg_ptr;
 	arg_ptr += sizeof(task->type);

@@ -900,7 +900,7 @@ void _starpu_codelet_check_deprecated_fields(struct starpu_codelet *cl)
 #ifdef STARPU_USE_MPI_SERVER_CLIENT
 	some_impl = 0;
 	for (i = 0; i < STARPU_MAXIMPLEMENTATIONS; i++)
-		if (cl->cpu_funcs_name[i])
+		if (cl->cpu_funcs_name[i] || cl->cuda_funcs_name[i])
 		{
 			some_impl = 1;
 			break;
@@ -914,7 +914,7 @@ void _starpu_codelet_check_deprecated_fields(struct starpu_codelet *cl)
 #ifdef STARPU_USE_TCPIP_SERVER_CLIENT
 	some_impl = 0;
 	for (i = 0; i < STARPU_MAXIMPLEMENTATIONS; i++)
-		if (cl->cpu_funcs_name[i])
+		if (cl->cpu_funcs_name[i] || cl->cuda_funcs_name[i])
 		{
 			some_impl = 1;
 			break;
